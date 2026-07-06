@@ -1,0 +1,143 @@
+# ============================================================
+# MEDICAL DATA — must never be committed
+# ============================================================
+
+# DICOM
+*.dcm
+*.DCM
+*.dicom
+data/raw/
+
+# Preprocessed imaging tensors (large .npy volumes/masks) — regenerate via
+# scripts/preprocessing/batch_preprocess.py rather than committing
+data/processed/radiomics/
+
+# NIfTI / medical imaging
+*.nii
+*.nii.gz
+*.mha
+*.mhd
+*.nrrd
+*.mnc
+*.img
+*.hdr
+
+# MIMIC / PhysioNet exports
+mimic*/
+*.csv.gz          # common MIMIC export format
+noteevents*.csv
+radiology*.csv
+discharge*.csv
+
+# TCIA downloads
+*.zip             # TCIA series ZIPs
+manifest*.tcia
+
+# ============================================================
+# MODEL ARTIFACTS & CHECKPOINTS
+# ============================================================
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+*.bin             # HuggingFace model weights
+results/segmentation/
+results/staging/
+checkpoints/
+runs/
+lightning_logs/
+nnUNet_results/
+nnUNet_preprocessed/
+nnUNet_raw/
+
+# ============================================================
+# VECTOR DATABASES
+# ============================================================
+chroma/
+chromadb/
+*.chroma
+*.lance
+faiss_index/
+*.faiss
+*.index
+
+# ============================================================
+# PYTHON
+# ============================================================
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg
+*.egg-info/
+dist/
+build/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.so
+.installed.cfg
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+.env
+
+# ============================================================
+# JUPYTER
+# ============================================================
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+*-checkpoint.ipynb
+
+# ============================================================
+# IDE & OS
+# ============================================================
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+*.bak
+
+# ============================================================
+# SECRETS & CONFIG OVERRIDES
+# ============================================================
+.env
+.env.*
+secrets.yaml
+secrets.yml
+*_secret*
+*_key*
+*.pem
+*.p12
+
+# ============================================================
+# LOGS & TEMP
+# ============================================================
+*.log
+logs/
+tmp/
+temp/
+.cache/
+wandb/
+mlruns/
+.mlflow/
+
+# ============================================================
+# COHORT TABLES & PACKAGED COPIES — never publish
+# ============================================================
+# MIMIC-IV-derived cohort CSVs (credentialed data, DUA prohibits sharing)
+data/processed/cohort/
+# Packaged submission copies (bundle data-bearing notebooks)
+submission/
+submission.zip
