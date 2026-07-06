@@ -1,0 +1,77 @@
+# ==========================================================================
+# IASLC / AJCC TNM stage grouping rules for NSCLC
+# ==========================================================================
+# Loaded by agents.guideline_logic.GuidelineLogicAgent.load_rules().
+#
+# ⚠️  CLINICAL VERIFICATION REQUIRED
+#     These groupings encode the widely-used IASLC 8th-edition stage groups.
+#     They are provided for a research pipeline and MUST be verified against the
+#     official IASLC/AJCC source before any clinical interpretation. This file is
+#     data, not medical advice — edit the tables below to match your reference.
+#
+#     9th-edition deltas to review if you adopt it (NOT yet encoded here):
+#       - N2 is subdivided into N2a (single station) / N2b (multiple stations),
+#         which shifts some T1-2 N2 groupings.
+#       - M1c is subdivided into M1c1 (multiple lesions, one organ system) /
+#         M1c2 (multiple organ systems).
+#     To adopt these, add the subcategories to *_categories and stage_groups.
+# ==========================================================================
+
+edition: "IASLC 8th edition (stage groups)"
+
+# Valid category tokens (used for input validation).
+t_categories: [TX, Tis, T1mi, T1a, T1b, T1c, T2a, T2b, T3, T4]
+n_categories: [NX, N0, N1, N2, N3]
+m_categories: [MX, M0, M1a, M1b, M1c]
+
+# Ordered rules — first match wins. 'any' is a wildcard.
+# Distant metastasis (M1) determines stage IV regardless of T and N, so those
+# rules are listed first.
+stage_groups:
+  # ---- M1: distant metastasis dominates ----
+  - {t: any,  n: any, m: M1a, stage: IVA}
+  - {t: any,  n: any, m: M1b, stage: IVA}
+  - {t: any,  n: any, m: M1c, stage: IVB}
+
+  # ---- Stage 0 ----
+  - {t: Tis,  n: N0,  m: M0, stage: "0"}
+
+  # ---- N0, M0 ----
+  - {t: T1mi, n: N0,  m: M0, stage: IA1}
+  - {t: T1a,  n: N0,  m: M0, stage: IA1}
+  - {t: T1b,  n: N0,  m: M0, stage: IA2}
+  - {t: T1c,  n: N0,  m: M0, stage: IA3}
+  - {t: T2a,  n: N0,  m: M0, stage: IB}
+  - {t: T2b,  n: N0,  m: M0, stage: IIA}
+  - {t: T3,   n: N0,  m: M0, stage: IIB}
+  - {t: T4,   n: N0,  m: M0, stage: IIIA}
+
+  # ---- N1, M0 ----
+  - {t: T1mi, n: N1,  m: M0, stage: IIB}
+  - {t: T1a,  n: N1,  m: M0, stage: IIB}
+  - {t: T1b,  n: N1,  m: M0, stage: IIB}
+  - {t: T1c,  n: N1,  m: M0, stage: IIB}
+  - {t: T2a,  n: N1,  m: M0, stage: IIB}
+  - {t: T2b,  n: N1,  m: M0, stage: IIB}
+  - {t: T3,   n: N1,  m: M0, stage: IIIA}
+  - {t: T4,   n: N1,  m: M0, stage: IIIA}
+
+  # ---- N2, M0 ----
+  - {t: T1mi, n: N2,  m: M0, stage: IIIA}
+  - {t: T1a,  n: N2,  m: M0, stage: IIIA}
+  - {t: T1b,  n: N2,  m: M0, stage: IIIA}
+  - {t: T1c,  n: N2,  m: M0, stage: IIIA}
+  - {t: T2a,  n: N2,  m: M0, stage: IIIA}
+  - {t: T2b,  n: N2,  m: M0, stage: IIIA}
+  - {t: T3,   n: N2,  m: M0, stage: IIIB}
+  - {t: T4,   n: N2,  m: M0, stage: IIIB}
+
+  # ---- N3, M0 ----
+  - {t: T1mi, n: N3,  m: M0, stage: IIIB}
+  - {t: T1a,  n: N3,  m: M0, stage: IIIB}
+  - {t: T1b,  n: N3,  m: M0, stage: IIIB}
+  - {t: T1c,  n: N3,  m: M0, stage: IIIB}
+  - {t: T2a,  n: N3,  m: M0, stage: IIIB}
+  - {t: T2b,  n: N3,  m: M0, stage: IIIB}
+  - {t: T3,   n: N3,  m: M0, stage: IIIC}
+  - {t: T4,   n: N3,  m: M0, stage: IIIC}
