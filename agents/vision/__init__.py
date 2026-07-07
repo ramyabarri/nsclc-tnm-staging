@@ -17,7 +17,6 @@ Notes / limitations:
 from __future__ import annotations
 
 import logging
-import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -120,14 +119,19 @@ class VisionAgent:
     def segment(self, volume: np.ndarray) -> np.ndarray:
         """Run the locally-trained nnU-Net; return a binary tumour mask.
 
-        Delegates to agents.vision.inference. Returns a zero mask (with a warning)
-        if no trained model is present.
+        `volume` must be RAW HU (nnU-Net normalises internally). Wraps it in a
+        SimpleITK image using self.spacing and delegates to agents.vision.inference.
+        Returns a zero mask (with a warning) if no trained model is present.
         """
+        import SimpleITK as sitk
         from agents.vision.inference import run_nnunet_inference
 
-        with tempfile.TemporaryDirectory() as d:
-            np.save(Path(d) / "case_ct.npy", volume)
-            mask, _ = run_nnunet_inference("case", d, self.model_folder)
+        image = sitk.GetImageFromArray(np.asarray(volume))
+        sz, sy, sx = self.spacing
+        image.SetSpacing((sx, sy, sz))   # SimpleITK expects (x, y, z)
+        mask, _ = run_nnunet_inference(
+            image, self.model_folder, device=self.config.get("device", "cpu")
+        )
         return mask
 
     def extract_radiomics(self, volume: np.ndarray, mask: np.ndarray) -> dict[str, float]:

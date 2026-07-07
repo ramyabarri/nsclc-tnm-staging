@@ -43,12 +43,16 @@ manifest*.tcia
 *.bin             # HuggingFace model weights
 results/segmentation/
 results/staging/
+# RAG ablation outputs contain MIMIC subject_ids — keep local
+results/ablation/
 checkpoints/
 runs/
 lightning_logs/
 nnUNet_results/
 nnUNet_preprocessed/
 nnUNet_raw/
+# downloaded trained model (~450 MB) — keep local
+results/nnunet/
 
 # ============================================================
 # VECTOR DATABASES

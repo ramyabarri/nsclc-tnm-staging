@@ -1,6 +1,11 @@
 # Inference wrappers for the 2 baseline segmentation models:
-# 1. nnU-Net v2 (trained locally on NSCLC-Radiomics)
-# 2. TotalSegmentator lung_nodules task
+#   1. nnU-Net v2 (trained locally on NSCLC-Radiomics)
+#   2. TotalSegmentator lung_nodules task
+#
+# Both models expect a RAW-HU CT (SimpleITK image) with correct geometry — they
+# apply their own intensity normalisation internally. Do NOT pass the
+# z-score-normalised pipeline .npy volumes here; that mismatch silently degrades
+# predictions (nnU-Net/TotalSegmentator would see the wrong HU range).
 
 import logging
 import tempfile
@@ -12,43 +17,35 @@ import SimpleITK as sitk
 
 logger = logging.getLogger(__name__)
 
-# preprocessing pipeline uses (X, Y, Z) spacing = (1.0, 1.0, 3.0) mm
-SPACING_XYZ = (1.0, 1.0, 3.0)
-
 # nnU-Net v2 dataset name for the locally trained NSCLC-Radiomics model
 NNUNET_DATASET_NAME = "Dataset001_NSCLCRadiomics"
 
 
-def _array_to_nifti(volume, path):
-    """Save a (Z, Y, X) numpy array as NIfTI with the pipeline spacing."""
-    image = sitk.GetImageFromArray(volume)
-    image.SetSpacing(SPACING_XYZ)
-    sitk.WriteImage(image, str(path))
-
-
 # --- 1. nnU-Net v2 (locally trained) ---
 
-def run_nnunet_inference(patient_id, processed_dir, model_folder, device="cpu"):
-    """Run locally trained nnU-Net v2 on one patient.
+def run_nnunet_inference(ct_image, model_folder, device="cpu"):
+    """Run the trained nnU-Net v2 on a raw-HU CT.
 
     Args:
-        model_folder: Path to the nnU-Net results folder, e.g.
+        ct_image: SimpleITK.Image in raw HU, with correct spacing/origin/direction
+            (e.g. from load_ct_series on the DICOM series). nnU-Net resamples and
+            normalises internally.
+        model_folder: nnU-Net results folder, e.g.
             results/nnunet/Dataset001_NSCLCRadiomics/nnUNetTrainer_250epochs__nnUNetPlans__3d_fullres
-        device: "cpu" or "cuda". Use "cuda" on the Vast.ai GPU box (seconds/patient).
+        device: "cpu" or "cuda".
     Returns:
-        (mask, elapsed_sec) — mask is a binary (Z, Y, X) uint8 array.
-        Returns a zero mask and logs a warning if inference fails.
+        (mask, elapsed_sec) — binary (Z, Y, X) uint8 mask aligned to ct_image.
+        Returns a zero mask and logs a warning if the model is missing or fails.
     """
-    ct = np.load(Path(processed_dir) / f"{patient_id}_ct.npy")
     model_folder = Path(model_folder)
+    ref_shape = sitk.GetArrayFromImage(ct_image).shape
 
     if not model_folder.exists():
         logger.warning(
-            "nnU-Net model folder not found: %s — run nnUNet_plan_and_preprocess "
-            "and nnUNet_train on the NSCLC-Radiomics cohort first.",
-            model_folder,
+            "nnU-Net model folder not found: %s — download/unzip the trained model "
+            "into results/nnunet/ first.", model_folder,
         )
-        return np.zeros(ct.shape, dtype=np.uint8), 0.0
+        return np.zeros(ref_shape, dtype=np.uint8), 0.0
 
     start = time.time()
     try:
@@ -56,13 +53,10 @@ def run_nnunet_inference(patient_id, processed_dir, model_folder, device="cpu"):
         from nnunetv2.inference.predict_from_raw_data import nnUNetPredictor
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            tmp_path = Path(tmpdir)
-            input_dir = tmp_path / "input"
-            output_dir = tmp_path / "output"
-            input_dir.mkdir()
-            output_dir.mkdir()
-
-            _array_to_nifti(ct, input_dir / f"{patient_id}_0000.nii.gz")
+            tmp = Path(tmpdir)
+            (tmp / "in").mkdir()
+            (tmp / "out").mkdir()
+            sitk.WriteImage(ct_image, str(tmp / "in" / "case_0000.nii.gz"))
 
             predictor = nnUNetPredictor(
                 tile_step_size=0.5,
@@ -78,55 +72,52 @@ def run_nnunet_inference(patient_id, processed_dir, model_folder, device="cpu"):
                 checkpoint_name="checkpoint_best.pth",
             )
             predictor.predict_from_files(
-                str(input_dir), str(output_dir),
+                str(tmp / "in"), str(tmp / "out"),
                 save_probabilities=False, overwrite=True,
             )
-
-            out_file = output_dir / f"{patient_id}.nii.gz"
-            pred_image = sitk.ReadImage(str(out_file))
+            pred_image = sitk.ReadImage(str(tmp / "out" / "case.nii.gz"))
             pred_mask = (sitk.GetArrayFromImage(pred_image) > 0).astype(np.uint8)
 
     except Exception as exc:
-        logger.warning("nnU-Net inference failed for %s: %s", patient_id, exc)
-        pred_mask = np.zeros(ct.shape, dtype=np.uint8)
+        logger.warning("nnU-Net inference failed: %s", exc)
+        pred_mask = np.zeros(ref_shape, dtype=np.uint8)
 
     return pred_mask, time.time() - start
 
 
 # --- 2. TotalSegmentator (lung_nodules task) ---
 
-def run_totalsegmentator_inference(patient_id, processed_dir):
-    """Run TotalSegmentator lung_nodules task on one patient.
+def run_totalsegmentator_inference(ct_image, device="cpu"):
+    """Run TotalSegmentator lung_nodules on a raw-HU CT.
 
-    Uses the task='lung_nodules' model which segments lung tissue (class 1)
-    and lung nodules (class 2). We extract class 2 as the tumour candidate mask.
-    Returns (mask, elapsed_sec).
+    The lung_nodules task segments lung tissue (class 1) and lung nodules
+    (class 2); we extract the nodule mask. Returns (mask, elapsed_sec).
     """
-    ct = np.load(Path(processed_dir) / f"{patient_id}_ct.npy")
-
     from totalsegmentator.python_api import totalsegmentator
+
+    ref_shape = sitk.GetArrayFromImage(ct_image).shape
+    ts_device = "gpu" if device in ("cuda", "gpu") else "cpu"
 
     start = time.time()
     with tempfile.TemporaryDirectory() as tmpdir:
-        tmp_path = Path(tmpdir)
-        input_path = tmp_path / f"{patient_id}.nii.gz"
-        output_dir = tmp_path / "segmentations"
-        _array_to_nifti(ct, input_path)
+        tmp = Path(tmpdir)
+        input_path = tmp / "input.nii.gz"
+        output_dir = tmp / "segmentations"
+        sitk.WriteImage(ct_image, str(input_path))
 
-        # The lung_nodules task has no "fast" variant — it rejects fast=True,
-        # so we run the full-resolution model on CPU.
+        # lung_nodules has no "fast" variant (it rejects fast=True).
         totalsegmentator(
             str(input_path), str(output_dir),
             task="lung_nodules",
-            fast=False, ml=False, device="cpu", quiet=True,
+            fast=False, ml=False, device=ts_device, quiet=True,
         )
 
         nodule_path = output_dir / "lung_nodules.nii.gz"
         if nodule_path.exists():
             pred_image = sitk.ReadImage(str(nodule_path))
-            combined = (sitk.GetArrayFromImage(pred_image) > 0).astype(np.uint8)
+            mask = (sitk.GetArrayFromImage(pred_image) > 0).astype(np.uint8)
         else:
-            logger.warning("TotalSegmentator lung_nodules output missing for %s", patient_id)
-            combined = np.zeros(ct.shape, dtype=np.uint8)
+            logger.warning("TotalSegmentator lung_nodules output missing")
+            mask = np.zeros(ref_shape, dtype=np.uint8)
 
-    return combined, time.time() - start
+    return mask, time.time() - start

@@ -13,7 +13,8 @@ def _note(text, nid="n1", ntype="radiology"):
 
 
 def _run(text):
-    return ClinicalContextAgent({}).run([_note(text)])
+    # use_rag=False exercises the extraction logic directly over the full note.
+    return ClinicalContextAgent({}).run([_note(text)], use_rag=False)
 
 
 # --- M category ------------------------------------------------------------
@@ -122,3 +123,35 @@ def test_retrieve_context_keyword_fallback():
 
 def test_repr_says_retrieve_only():
     assert "retrieve_only=True" in repr(ClinicalContextAgent({}))
+
+
+# --- RAG ablation toggle ---------------------------------------------------
+
+_KW = {"use_semantic": False}   # keyword retrieval — no model download in tests
+
+
+def test_rag_toggle_recorded_in_metadata():
+    note = _note("Mediastinal lymphadenopathy. Hepatic metastasis.")
+    for flag in (True, False):
+        ev = ClinicalContextAgent(_KW).run([note], use_rag=flag)
+        assert ev.metadata["use_rag"] is flag
+
+
+def test_rag_mode_still_extracts_relevant_evidence():
+    # In RAG mode the relevant sentences must be retrieved and extracted.
+    note = _note(
+        "Patient admitted for pneumonia. Vitals stable. Chest CT: enlarged "
+        "mediastinal lymph nodes and hepatic metastases. Discharged home."
+    )
+    ev = ClinicalContextAgent(_KW).run([note], use_rag=True)
+    assert ev.n_category == "N2"
+    assert ev.m_category in ("M1b", "M1c")
+
+
+def test_rag_focuses_and_can_drop_distant_noise():
+    # A long note where the only staging-relevant sentence is buried; RAG should
+    # still surface it (keyword-stem fallback), producing a positive N call.
+    filler = "The patient tolerated the procedure well. " * 40
+    note = _note(filler + "Bulky supraclavicular lymphadenopathy is present. " + filler)
+    ev = ClinicalContextAgent(_KW).run([note], use_rag=True)
+    assert ev.n_category == "N3"

@@ -82,8 +82,20 @@ METASTASIS_SITES: dict[str, tuple[re.Pattern, bool]] = {
     "contralateral_lung": (re.compile(r"\bcontralateral (?:lung|lobe|nodule|pulmonary)\b", re.I), False),
 }
 
+# PATHOLOGICAL nodal involvement only. A bare "lymph node" mention is routine
+# anatomy — chest CTs describe nodes even when normal ("nodes measure 8 mm",
+# "lymph nodes are unremarkable") — so it must NOT count as N-positive. We require
+# an explicitly pathological descriptor.
 NODE_TRIGGER = re.compile(
-    r"\b(lymph\s*nodes?|lymphadenopath\w+|adenopathy|nodal (?:disease|involvement|metasta\w+))\b",
+    r"\b("
+    r"lymphadenopath\w+|adenopathy"                                    # inherently pathological
+    r"|(?:enlarged|bulky|prominent|pathologic\w*|necrotic|conglomerate|"
+    r"fdg[-\s]?avid|hypermetabolic|metastatic|malignant)\s+(?:\w+[-\s]+){0,3}?"
+    r"(?:lymph\s*)?nodes?"                                             # "enlarged ... node"
+    r"|(?:lymph\s*)?nodes?\s+(?:that\s+are\s+|which\s+are\s+|are\s+|were\s+|appear\w*\s+)?"
+    r"(?:enlarged|involved|positive|metastatic|bulky|prominent|pathologic\w*|abnormal)"  # "nodes are enlarged"
+    r"|nodal\s+(?:disease|involvement|metasta\w+|spread|uptake)"
+    r")\b",
     re.IGNORECASE,
 )
 
@@ -95,6 +107,15 @@ NODE_LOCATION_TO_N: list[tuple[re.Pattern, str]] = [
 ]
 
 _SENTENCE_SPLIT = re.compile(r"(?<=[.;:\n])\s+")
+
+# Query used to retrieve N/M-relevant passages in RAG mode. Uses word STEMS so
+# the keyword fallback matches morphological variants (metasta -> metastasis /
+# metastases / metastatic; adenopath -> adenopathy). Semantic retrieval, when
+# available, does not depend on this.
+DEFAULT_RAG_QUERY = (
+    "lymph node nodal adenopath lymphadenopath mediastin hilar supraclavic "
+    "subcarinal paratracheal metasta spread distant staging tumor lesion"
+)
 
 
 class ClinicalContextAgent:
@@ -113,6 +134,9 @@ class ClinicalContextAgent:
         self.config = config or {}
         self.embed_model_name = self.config.get("embedding_model", "emilyalsentzer/Bio_ClinicalBERT")
         self.min_confidence = self.config.get("min_confidence", 0.5)
+        self.rag_k = self.config.get("rag_k", 8)              # passages retrieved in RAG mode
+        self.rag_query = self.config.get("rag_query", DEFAULT_RAG_QUERY)
+        self.use_semantic = self.config.get("use_semantic", True)  # False -> keyword retrieval only
         self._embedder = None
         self._vector_store = None
         self._notes: dict[str, dict[str, str]] = {}   # note_id -> note dict
@@ -124,6 +148,8 @@ class ClinicalContextAgent:
     def load_models(self) -> bool:
         """Try to load the ClinicalBERT embedder. Returns True if semantic
         retrieval is available, False if we fall back to keyword retrieval."""
+        if not self.use_semantic:
+            return False
         if self._embedder is not None:
             return True
         try:
@@ -153,25 +179,38 @@ class ClinicalContextAgent:
         self,
         notes: list[dict[str, str]],
         patient_id: str | None = None,
+        use_rag: bool = True,
     ) -> NMFactorEvidence:
-        """Extract N/M evidence from a patient's clinical notes."""
+        """Extract N/M evidence from a patient's clinical notes.
+
+        This is the ABLATION lever:
+        - use_rag=True  : retrieve the top-k N/M-relevant passages and extract
+          ONLY from those (focuses on relevant evidence, suppressing noise from
+          long notes — historical/incidental/negated mentions elsewhere).
+        - use_rag=False : extract from the full note text, no retrieval focusing.
+        Retrieval therefore materially changes the N/M output.
+        """
+        self._notes = {}
         self.index_notes(notes)
 
-        # Surface the passages we looked at (for transparency).
-        context = self.retrieve_context(
-            "lymph node metastasis distant spread staging", n_results=5
-        )
-
-        spans: list[ClinicalSpan] = []
-        for note in notes:
-            spans.extend(self.extract_entities(
-                note.get("text", ""), source_note_id=note.get("note_id", "unknown")
-            ))
+        if use_rag:
+            context = self.retrieve_context(self.rag_query, n_results=self.rag_k)
+            spans: list[ClinicalSpan] = []
+            for passage in context:
+                spans.extend(self.extract_entities(
+                    passage, source_note_id=patient_id or "retrieved"))
+        else:
+            context = []
+            spans = []
+            for note in notes:
+                spans.extend(self.extract_entities(
+                    note.get("text", ""), source_note_id=note.get("note_id", "unknown")))
 
         evidence = self.classify_nm_factors(spans, context)
         evidence.retrieved_context = context
         evidence.metadata["patient_id"] = patient_id
         evidence.metadata["n_notes"] = len(notes)
+        evidence.metadata["use_rag"] = use_rag
         return evidence
 
     # ------------------------------------------------------------------
