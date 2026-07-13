@@ -130,6 +130,41 @@ def test_extract_radiomics_fallback_features():
     assert feats["max_diameter_mm"] > 0
 
 
+def test_largest_component_ignores_satellite():
+    """A small disconnected deposit must not enlarge the measured primary tumour."""
+    a = _agent()
+    mask = _ball(20)                       # primary ~40 mm
+    # add a far-away 1-voxel satellite that would inflate a whole-mask diameter
+    mask[0, 0, 0] = 1
+    primary, n_comp, frac = a._primary_component(mask.astype(bool))
+    assert n_comp == 2
+    assert frac > 0.99
+    feats = a.extract_radiomics(np.zeros_like(mask), mask)
+    assert feats["n_components"] == 2
+    # measured diameter reflects the primary (~40 mm), not the corner-to-ball span
+    assert feats["max_diameter_mm"] < 50
+
+
+def test_axial_diameter_below_3d_for_elongated_tumour():
+    """Axial greatest dimension must not exceed the 3D diameter; for a z-elongated
+    mask it should be strictly smaller (the fix that curbs T over-staging)."""
+    a = VisionAgent({"spacing_zyx": [3.0, 1.0, 1.0]})
+    # a column tall in z (30 slices) but small in-plane (~10 mm)
+    mask = np.zeros((30, 20, 20), dtype=np.uint8)
+    mask[:, 8:12, 8:12] = 1
+    axial = a._max_axial_diameter_mm(mask.astype(bool))
+    d3d = a._max_diameter_mm(mask.astype(bool))
+    assert axial < d3d
+    assert axial < 15   # in-plane extent only
+
+
+def test_diameter3d_method_recovers_old_behaviour():
+    a = VisionAgent({"spacing_zyx": [1.0, 1.0, 1.0], "diameter_method": "diameter3d"})
+    mask = _ball(20)
+    feats = a.extract_radiomics(np.zeros_like(mask), mask)
+    assert feats["max_diameter_mm"] == pytest.approx(feats["max_diameter_3d_mm"])
+
+
 def test_run_end_to_end(tmp_path):
     a = _agent()
     mask = _ball(22)  # ~T2b
