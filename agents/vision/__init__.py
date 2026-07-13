@@ -71,6 +71,14 @@ class VisionAgent:
         self.spacing = tuple(self.config.get("spacing_zyx", DEFAULT_SPACING_ZYX))
         self.model_folder = Path(self.config.get("nnunet_model", DEFAULT_NNUNET_MODEL_FOLDER))
         self.min_tumour_voxels = int(self.config.get("min_tumour_voxels", 10))
+        # Clinical T is the greatest dimension of the PRIMARY tumour, measured on
+        # the axial plane. Measuring the max-3D-diameter over the whole GTV
+        # over-stages: (a) the cranio-caudal diagonal inflates the number, and
+        # (b) disconnected nodal/satellite deposits in the GTV get included.
+        # Defaults below fix both; set diameter_method="diameter3d" and
+        # use_largest_component=False to recover the naive whole-GTV behaviour.
+        self.diameter_method = self.config.get("diameter_method", "axial")  # "axial" | "diameter3d"
+        self.use_largest_component = bool(self.config.get("use_largest_component", True))
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -137,14 +145,28 @@ class VisionAgent:
     def extract_radiomics(self, volume: np.ndarray, mask: np.ndarray) -> dict[str, float]:
         """Shape features from the mask. Full PyRadiomics vector is added if the
         library is installed (lazy); otherwise the basic shape features suffice
-        for T classification."""
-        mask_b = np.asarray(mask, dtype=bool)
+        for T classification.
+
+        Size is measured on the PRIMARY tumour (largest connected component) using
+        the configured `diameter_method` — see __init__ for why this avoids
+        over-staging. Both the axial and 3D diameters are recorded for audit.
+        """
+        full_b = np.asarray(mask, dtype=bool)
+        primary_b, n_components, largest_frac = self._primary_component(full_b)
         voxel_vol_mm3 = float(np.prod(self.spacing))
+        diam_3d = self._max_diameter_mm(primary_b)
+        diam_axial = self._max_axial_diameter_mm(primary_b)
+        chosen = diam_axial if self.diameter_method == "axial" else diam_3d
         feats: dict[str, float] = {
-            "voxel_count": int(mask_b.sum()),
-            "volume_mm3": float(mask_b.sum() * voxel_vol_mm3),
-            "max_diameter_mm": self._max_diameter_mm(mask_b),
+            "voxel_count": int(primary_b.sum()),
+            "volume_mm3": float(primary_b.sum() * voxel_vol_mm3),
+            "max_diameter_mm": chosen,
+            "max_diameter_3d_mm": diam_3d,
+            "max_axial_diameter_mm": diam_axial,
+            "n_components": int(n_components),
+            "largest_component_frac": round(float(largest_frac), 4),
         }
+        mask_b = primary_b
 
         # Optional: full PyRadiomics shape features when available.
         try:
@@ -164,7 +186,11 @@ class VisionAgent:
                 k: float(v) for k, v in result.items()
                 if k.startswith("original_") and np.isscalar(v)
             })
-            if "original_shape_Maximum3DDiameter" in feats:
+            # Prefer PyRadiomics' own diameter for the chosen method (axial =
+            # Maximum2DDiameterSlice, 3D = Maximum3DDiameter) when available.
+            if self.diameter_method == "axial" and "original_shape_Maximum2DDiameterSlice" in feats:
+                feats["max_diameter_mm"] = feats["original_shape_Maximum2DDiameterSlice"]
+            elif self.diameter_method != "axial" and "original_shape_Maximum3DDiameter" in feats:
                 feats["max_diameter_mm"] = feats["original_shape_Maximum3DDiameter"]
         except Exception as exc:  # pyradiomics not installed / extraction failed
             logger.debug("PyRadiomics unavailable, using basic shape features (%s)", exc)
@@ -179,10 +205,11 @@ class VisionAgent:
     ) -> tuple[str, float]:
         """Map greatest tumour dimension -> IASLC T category (+ optional invasion
         upstaging). Returns (t_category, confidence)."""
+        primary_b, _, _ = self._primary_component(np.asarray(mask, dtype=bool))
         diam = (radiomics or {}).get("max_diameter_mm")
         if diam is None:
-            diam = self._max_diameter_mm(np.asarray(mask, dtype=bool))
-        voxels = int(np.asarray(mask, dtype=bool).sum())
+            diam = self._greatest_dimension_mm(primary_b)
+        voxels = int(primary_b.sum())
 
         if voxels < self.min_tumour_voxels or diam <= 0:
             return "TX", 0.0   # no usable tumour segmentation
@@ -195,6 +222,35 @@ class VisionAgent:
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
+
+    def _primary_component(self, mask: np.ndarray) -> tuple[np.ndarray, int, float]:
+        """Return (largest-connected-component mask, n_components, largest_frac).
+
+        The GTV can contain disconnected nodal/satellite deposits; clinical T is
+        the primary tumour, so we keep the single largest 3D-connected component.
+        Disabled via use_largest_component=False (returns the mask unchanged).
+        """
+        mask_b = np.asarray(mask, dtype=bool)
+        total = int(mask_b.sum())
+        if total == 0:
+            return mask_b, 0, 0.0
+        if not self.use_largest_component:
+            return mask_b, 1, 1.0
+        from scipy.ndimage import label
+        labels, n = label(mask_b)
+        if n <= 1:
+            return mask_b, int(n), 1.0
+        counts = np.bincount(labels.ravel())
+        counts[0] = 0                      # background
+        largest = int(counts.argmax())
+        primary = labels == largest
+        return primary, int(n), counts[largest] / total
+
+    def _greatest_dimension_mm(self, mask: np.ndarray) -> float:
+        """Greatest dimension via the configured method (axial or full 3D)."""
+        if self.diameter_method == "axial":
+            return self._max_axial_diameter_mm(mask)
+        return self._max_diameter_mm(mask)
 
     def _max_diameter_mm(self, mask: np.ndarray) -> float:
         """Greatest 3D dimension (mm) — max distance between any two tumour voxels."""
@@ -213,6 +269,39 @@ class VisionAgent:
             # degenerate (collinear/coplanar) -> bounding-box diagonal
             extent = phys.max(axis=0) - phys.min(axis=0)
             return float(np.linalg.norm(extent))
+
+    def _max_axial_diameter_mm(self, mask: np.ndarray) -> float:
+        """Greatest IN-PLANE (axial) dimension (mm) — the clinical convention.
+
+        For each axial slice, the longest distance between two tumour voxels
+        within that slice (using the y/x spacing); the tumour's greatest axial
+        dimension is the max over slices. Avoids the cranio-caudal inflation of
+        the 3D diagonal.
+        """
+        mask_b = np.asarray(mask, dtype=bool)
+        if mask_b.sum() < 2:
+            return 0.0
+        sy, sx = float(self.spacing[1]), float(self.spacing[2])
+        from scipy.spatial.distance import pdist
+        best = 0.0
+        for z in np.flatnonzero(mask_b.any(axis=(1, 2))):
+            pts = np.argwhere(mask_b[z])            # (y, x) within the slice
+            if len(pts) < 2:
+                continue
+            phys = pts * np.asarray([sy, sx], dtype=float)
+            if len(pts) < 5:
+                d = float(pdist(phys).max())
+            else:
+                try:
+                    from scipy.spatial import ConvexHull
+                    hull = ConvexHull(phys)
+                    d = float(pdist(phys[hull.vertices]).max())
+                except Exception:
+                    extent = phys.max(axis=0) - phys.min(axis=0)
+                    d = float(np.linalg.norm(extent))
+            if d > best:
+                best = d
+        return best
 
     @staticmethod
     def _size_to_t(diam_mm: float) -> str:

@@ -26,6 +26,12 @@ NNUNET_DATASET_NAME = "Dataset001_NSCLCRadiomics"
 def run_nnunet_inference(ct_image, model_folder, device="cpu"):
     """Run the trained nnU-Net v2 on a raw-HU CT.
 
+    IMPORTANT: nnU-Net uses `spawn` multiprocessing for pre/post-processing. The
+    calling script MUST be guarded by ``if __name__ == "__main__":`` — otherwise
+    the worker processes re-execute the module top-level and the prediction
+    silently degrades to an empty mask. (Notebooks are fine; standalone scripts
+    are the hazard.)
+
     Args:
         ct_image: SimpleITK.Image in raw HU, with correct spacing/origin/direction
             (e.g. from load_ct_series on the DICOM series). nnU-Net resamples and
@@ -79,7 +85,10 @@ def run_nnunet_inference(ct_image, model_folder, device="cpu"):
             pred_mask = (sitk.GetArrayFromImage(pred_image) > 0).astype(np.uint8)
 
     except Exception as exc:
-        logger.warning("nnU-Net inference failed: %s", exc)
+        # Log the full traceback, not just the message — a silent zero mask here
+        # is indistinguishable from a genuine empty prediction and was masking
+        # real failures (missing torch, checkpoint mismatch, multiprocessing).
+        logger.warning("nnU-Net inference failed: %s", exc, exc_info=True)
         pred_mask = np.zeros(ref_shape, dtype=np.uint8)
 
     return pred_mask, time.time() - start
