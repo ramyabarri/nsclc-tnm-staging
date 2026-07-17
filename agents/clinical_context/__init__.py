@@ -1,19 +1,8 @@
-"""Clinical Context agent.
+"""
+Clinical Context Agent.
 
-This agent reads a patient's clinical notes (radiology reports and discharge
-summaries from MIMIC-IV-Note) and pulls out two things: whether the lymph nodes
-look involved (the N factor) and whether there is distant spread (the M factor).
-
-It works in two steps. First it optionally retrieves the handful of sentences most
-likely to mention nodes or metastasis, using ClinicalBERT sentence embeddings when
-the ML libraries are installed, or a simple keyword match when they are not.
-Then a rule-based layer reads those sentences and decides N and M. I kept the
-decision rule-based on purpose (no text generation), so every category the agent
-outputs can be traced back to the exact sentence it came from.
-
-Note: the way I map a node's location to an N category, and a metastasis site to
-an M subcategory, is a clinical heuristic and would need a clinician to verify it.
-The actual staging is done later by the Guideline Logic agent.
+Extracts lymph node (N) and distant metastasis (M) evidence from clinical notes
+using sentence retrieval and rule-based extraction.
 """
 
 from __future__ import annotations
@@ -54,8 +43,7 @@ class NMFactorEvidence:
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
-# Word lists and patterns the extractor matches on. These are heuristics I put
-# together from how radiology notes are usually phrased, not a validated ontology.
+# Regex patterns used for rule-based extraction.    
 
 NEGATION_CUES = re.compile(
     r"\b(no|not|without|negative for|no evidence of|denies|ruled out|"
@@ -79,10 +67,7 @@ METASTASIS_SITES: dict[str, tuple[re.Pattern, bool]] = {
     "contralateral_lung": (re.compile(r"\bcontralateral (?:lung|lobe|nodule|pulmonary)\b", re.I), False),
 }
 
-# This only fires on nodes that are described as abnormal. Just seeing the words
-# "lymph node" is not enough, because chest CTs mention nodes even when they are
-# normal ("nodes measure 8 mm", "lymph nodes are unremarkable"). So I require a
-# word that actually implies disease (enlarged, bulky, metastatic, and so on).
+# Match only abnormal lymph node findings.
 NODE_TRIGGER = re.compile(
     r"\b("
     r"lymphadenopath\w+|adenopathy"                                    # inherently pathological
@@ -105,9 +90,7 @@ NODE_LOCATION_TO_N: list[tuple[re.Pattern, str]] = [
 
 _SENTENCE_SPLIT = re.compile(r"(?<=[.;:\n])\s+")
 
-# The query used to pick out node/metastasis sentences when RAG is on. I use word
-# stems (metasta, adenopath) so the keyword fallback still matches the different
-# endings (metastasis, metastases, metastatic). The semantic path ignores this.
+# Default retrieval query.
 DEFAULT_RAG_QUERY = (
     "lymph node nodal adenopath lymphadenopath mediastin hilar supraclavic "
     "subcarinal paratracheal metasta spread distant staging tumor lesion"
@@ -115,16 +98,7 @@ DEFAULT_RAG_QUERY = (
 
 
 class ClinicalContextAgent:
-    """Reads clinical notes and returns N/M evidence, without generating text.
-
-    Retrieval (ClinicalBERT embeddings if available, keyword match otherwise) picks
-    which sentences to look at; a rule layer then decides N and M from those
-    sentences, keeping the reasoning traceable.
-
-    Example:
-        agent = ClinicalContextAgent(config)
-        evidence = agent.run(notes)
-    """
+    """Extract N and M factor evidence from clinical notes."""
 
     def __init__(self, config: dict[str, Any] | None = None) -> None:
         self.config = config or {}
@@ -138,12 +112,7 @@ class ClinicalContextAgent:
         self._notes: dict[str, dict[str, str]] = {}   # note_id -> note dict
 
     def load_models(self) -> bool:
-        """Try to load the ClinicalBERT embedder.
-
-        Returns True if it loaded (so we can use semantic retrieval) and False if
-        the libraries are not installed, in which case we drop back to keywords.
-        The model is only loaded the first time it is needed.
-        """
+        """Load the ClinicalBERT embedding model if available."""
         if not self.use_semantic:
             return False
         if self._embedder is not None:
@@ -173,16 +142,7 @@ class ClinicalContextAgent:
         patient_id: str | None = None,
         use_rag: bool = True,
     ) -> NMFactorEvidence:
-        """Extract N/M evidence from a patient's clinical notes.
-
-        The use_rag flag is the switch my ablation study turns on and off:
-        - use_rag=True  : only read the top-k retrieved sentences. This focuses on
-          the relevant bits and ignores the rest of a long note (old history,
-          incidental findings, things that were ruled out elsewhere).
-        - use_rag=False : read the whole note, with no retrieval step.
-        The two settings can give different N/M answers, which is the whole point
-        of the experiment.
-        """
+        """Extract N/M evidence from a patient's clinical notes."""
         self._notes = {}
         self.index_notes(notes)
 
@@ -207,33 +167,19 @@ class ClinicalContextAgent:
         return evidence
 
     def preprocess_text(self, text: str) -> str:
-        """Return the text unchanged.
-
-        I keep this as its own step so I have one place to add normalisation later,
-        but for now it deliberately does nothing that would shift character
-        positions, because the spans record where each mention was found.
-        """
+        """Preprocess clinical note text."""
         return text or ""
 
     def extract_entities(self, text: str, source_note_id: str = "unknown") -> list[ClinicalSpan]:
-        """Go sentence by sentence and pull out node / metastasis mentions.
-
-        For each sentence I first check whether it is negated ("no evidence of..."),
-        then look for metastasis and lymph-node phrases, tagging each hit with a
-        label and a rough confidence.
-        """
+        """Extract lymph node and metastasis mentions sentence by sentence."""
         text = self.preprocess_text(text)
         spans: list[ClinicalSpan] = []
 
         for sent, offset in self._sentences(text):
             negated = bool(NEGATION_CUES.search(sent))
 
-            # Metastasis.
-            # Chest-specific signs (malignant effusion, pleural/pericardial nodules,
-            # a contralateral nodule) are specific enough to count on their own.
-            # Plain organ words like brain/bone/liver could just be an incidental
-            # mention, so I only count those if the sentence also has a metastasis
-            # word in it.
+            
+            # Require explicit metastasis evidence for organ sites.
             trigger = METASTASIS_TRIGGER.search(sent)
             emitted_site = False
             for site, (pat, is_extra) in METASTASIS_SITES.items():
@@ -248,7 +194,7 @@ class ClinicalContextAgent:
                 label = "metastasis_negated" if negated else "metastasis_unspecified"
                 spans.append(self._span(sent, label, 0.7 if negated else 0.55, offset, source_note_id))
 
-            # Lymph nodes.
+            
             nt = NODE_TRIGGER.search(sent)
             if nt:
                 n_cat = self._node_category(sent)
@@ -262,11 +208,7 @@ class ClinicalContextAgent:
         return spans
 
     def retrieve_context(self, query: str, n_results: int = 5) -> list[str]:
-        """Return the n_results sentences most relevant to the query.
-
-        If ClinicalBERT loaded, rank sentences by embedding similarity; otherwise
-        rank them by how many of the query's keywords they contain.
-        """
+        """Retrieve the most relevant clinical sentences."""
         sentences: list[tuple[str, str]] = []   # (sentence, note_id)
         for nid, note in self._notes.items():
             for sent, _ in self._sentences(note["text"]):
@@ -275,7 +217,7 @@ class ClinicalContextAgent:
         if not sentences:
             return []
 
-        if self.load_models():   # semantic path
+        if self.load_models():   
             try:
                 import numpy as np
                 corpus = [s for s, _ in sentences]
@@ -303,7 +245,7 @@ class ClinicalContextAgent:
         """Combine all the extracted mentions into a single N and M category."""
         ev = NMFactorEvidence(supporting_spans=spans)
 
-        # Work out M first.
+        # Determine M category.
         pos_sites = set()
         extrathoracic = set()
         intrathoracic_m1a = False
@@ -341,14 +283,13 @@ class ClinicalContextAgent:
                 ev.m_category = "M1b"   # asserted mets, site unknown
             conf_m = 0.75
 
-        # Now N.
+        # Determine N category.
         pos_n = [s for s in spans if s.label.startswith("lymph_node_positive")]
         neg_n = [s for s in spans if s.label == "lymph_node_negated"]
         if pos_n:
             ev.lymph_node_positive = True
             cats = [s.label.rsplit("_", 1)[-1] for s in pos_n if s.label.rsplit("_", 1)[-1].startswith("N")]
             ev.lymph_node_stations = sorted(set(cats))
-            # highest (worst) category wins; default N2 when only "unspecified"
             ev.n_category = max(cats, key=_N_ORDER.__getitem__) if cats else "N2"
             conf_n = 0.72 if cats else 0.55
         elif neg_n:
@@ -358,7 +299,7 @@ class ClinicalContextAgent:
         else:
             ev.lymph_node_positive = False
             ev.n_category = "N0"
-            conf_n = 0.4   # absence of evidence, not evidence of absence
+            conf_n = 0.4   
 
         ev.confidence = round((conf_n + conf_m) / 2, 3)
         return ev

@@ -1,13 +1,7 @@
-"""Guideline Logic agent.
+"""
+Guideline Logic Agent.
 
-This is the last stage of the pipeline. It takes the T evidence from the Vision
-agent and the N/M evidence from the Clinical Context agent, then works out the
-overall stage by looking the (T, N, M) combination up in the IASLC table.
-
-I keep the actual staging table in configs/iaslc_rules.yaml rather than hard-coding
-it here, so the rules stay data (easy to check against the guideline, and I can
-swap editions without touching this file). When a value is missing I fall back to
-a conservative default instead of guessing.
+Maps T, N and M evidence to an overall stage using IASLC staging rules.
 """
 
 from __future__ import annotations
@@ -66,18 +60,8 @@ class StagingResult:
 
 
 class GuidelineLogicAgent:
-    """Turns T/N/M evidence into the final stage using the IASLC rules.
+    """Determine the overall stage from T, N and M evidence."""
 
-    It checks the inputs, fills in conservative defaults for anything missing,
-    looks up the stage, and returns a StagingResult that also records how it got
-    there (the rationale) so the decision can be audited.
-
-    Example:
-        agent = GuidelineLogicAgent(config)
-        result = agent.run(t_evidence, nm_evidence, patient_id="P001")
-    """
-
-    # (T, N, M) -> stage, populated from the rules file (exact combos only).
     _STAGE_TABLE: dict[tuple[str, str, str], str] = {}
 
     def __init__(self, config: dict[str, Any] | None = None) -> None:
@@ -214,14 +198,7 @@ class GuidelineLogicAgent:
         t_evidence: TFactorEvidence,
         nm_evidence: NMFactorEvidence,
     ) -> tuple[str, str, str]:
-        """Pull out (T, N, M), using safe defaults when a value is missing.
-
-        Each factor comes from a different agent (T from Vision, N and M from
-        Clinical Context), so there is no real disagreement to settle here, and the
-        job is just to fill gaps sensibly. Missing T or N becomes TX or NX, and a
-        missing M becomes M0, which is the usual convention when nothing points to
-        distant spread.
-        """
+        """Resolve missing T, N and M values using default categories."""
         t = getattr(t_evidence, "t_category", None) or "TX"
         n = getattr(nm_evidence, "n_category", None) or "NX"
         m = getattr(nm_evidence, "m_category", None) or "M0"

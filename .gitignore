@@ -148,3 +148,7 @@ data/processed/cohort/
 # Packaged submission copies (bundle data-bearing notebooks)
 submission/
 submission.zip
+
+# Project log and working reports — kept locally, written up in the dissertation
+claude.md
+reports/
