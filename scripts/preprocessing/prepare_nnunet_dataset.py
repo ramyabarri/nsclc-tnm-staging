@@ -1,10 +1,11 @@
 """
 Convert NSCLC-Radiomics DICOM data to nnU-Net v2 dataset format.
 
-Input: any directory tree containing the downloaded DICOMs. We do NOT assume a
-particular folder layout (tcia_utils' output naming varies by version); instead
-we walk the tree, read each series' DICOM header, and group series by PatientID /
-Modality. This makes the converter robust to whatever nesting the download produced.
+Input: any directory tree containing the downloaded DICOMs. I don't assume a
+particular folder layout (tcia_utils names its output differently across versions);
+instead I walk the tree, read each series' DICOM header, and group the series by
+PatientID and Modality, so the converter copes with whatever nesting the download
+happened to produce.
 
 Output:
     out_dir/Dataset001_NSCLCRadiomics/
@@ -42,10 +43,8 @@ DATASET_NAME = "NSCLCRadiomics"
 DATASET_FOLDER = f"Dataset{DATASET_ID}_{DATASET_NAME}"
 
 
-# ---------------------------------------------------------------------------
-# DICOM discovery — group series by PatientID / Modality from the headers,
+# DICOM discovery: group series by PatientID and Modality from the headers,
 # independent of the on-disk folder layout.
-# ---------------------------------------------------------------------------
 
 def index_series(raw_dir: Path) -> dict[str, dict[str, list[Path]]]:
     """Walk raw_dir and return {patient_id: {modality: [series_dir, ...]}}.
@@ -177,7 +176,7 @@ def convert_patient(
         ct_image = load_ct_series(ct_dir)
         mask_arr, roi_label = load_gtv_mask(ct_dir, rt_files[0], ct_image)
 
-        # Save CT in raw HU — nnU-Net applies its own normalisation
+        # Save CT in raw HU; nnU-Net applies its own normalisation
         sitk.WriteImage(ct_image, str(img_path))
 
         mask_image = sitk.GetImageFromArray(mask_arr)
@@ -226,7 +225,7 @@ def build_dataset(
     logger.info("Found %d patients with CT+RTSTRUCT (%d skipped)",
                 len(jobs), len(skipped))
     for pid, reason in skipped:
-        logger.warning("SKIP %s — %s", pid, reason)
+        logger.warning("SKIP %s: %s", pid, reason)
 
     failed: list[tuple[str, str]] = list(skipped)
     roi_choices: Counter = Counter()
@@ -234,7 +233,7 @@ def build_dataset(
     with mp.Pool(workers) as pool:
         for i, (pid, err, label) in enumerate(pool.imap_unordered(_worker, jobs), 1):
             status = "OK" if err is None else f"FAILED: {err}"
-            logger.info("[%d/%d] %s — %s%s", i, len(jobs), pid, status,
+            logger.info("[%d/%d] %s: %s%s", i, len(jobs), pid, status,
                         f" [{label}]" if label else "")
             if err:
                 failed.append((pid, err))
@@ -252,7 +251,7 @@ def build_dataset(
     n_fallback = roi_choices.get("largest-fallback", 0)
     if n_fallback:
         logger.warning(
-            "%d patient(s) had no 'GTV-1' ROI and used the largest-GTV fallback — "
+            "%d patient(s) had no 'GTV-1' ROI and used the largest-GTV fallback; "
             "inspect these for label consistency.", n_fallback)
 
     if failed:

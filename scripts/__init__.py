@@ -1,1 +1,1 @@
-"""NSCLC TNM Staging — standalone scripts (preprocessing, training, evaluation)."""
+"""NSCLC TNM staging: standalone scripts (preprocessing, training, evaluation)."""

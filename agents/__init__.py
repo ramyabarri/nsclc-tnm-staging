@@ -1,4 +1,4 @@
-"""NSCLC TNM Staging — agent package."""
+"""NSCLC TNM staging: agent package."""
 
 from agents.vision import VisionAgent
 from agents.clinical_context import ClinicalContextAgent

@@ -2,10 +2,10 @@
 #   1. nnU-Net v2 (trained locally on NSCLC-Radiomics)
 #   2. TotalSegmentator lung_nodules task
 #
-# Both models expect a RAW-HU CT (SimpleITK image) with correct geometry — they
-# apply their own intensity normalisation internally. Do NOT pass the
-# z-score-normalised pipeline .npy volumes here; that mismatch silently degrades
-# predictions (nnU-Net/TotalSegmentator would see the wrong HU range).
+# Both models expect a raw-HU CT (a SimpleITK image) with correct geometry; they
+# do their own intensity normalisation. So don't pass the z-score-normalised .npy
+# volumes from the preprocessing pipeline here, or the models see the wrong HU
+# range and the predictions quietly get worse.
 
 import logging
 import tempfile
@@ -26,11 +26,10 @@ NNUNET_DATASET_NAME = "Dataset001_NSCLCRadiomics"
 def run_nnunet_inference(ct_image, model_folder, device="cpu"):
     """Run the trained nnU-Net v2 on a raw-HU CT.
 
-    IMPORTANT: nnU-Net uses `spawn` multiprocessing for pre/post-processing. The
-    calling script MUST be guarded by ``if __name__ == "__main__":`` — otherwise
-    the worker processes re-execute the module top-level and the prediction
-    silently degrades to an empty mask. (Notebooks are fine; standalone scripts
-    are the hazard.)
+    One thing that caught me out: nnU-Net uses `spawn` multiprocessing, so the
+    calling script has to be under ``if __name__ == "__main__":``. If it isn't,
+    the worker processes re-run the module's top level and the prediction quietly
+    comes back as an empty mask. Notebooks are fine; plain scripts are the trap.
 
     Args:
         ct_image: SimpleITK.Image in raw HU, with correct spacing/origin/direction
@@ -40,7 +39,7 @@ def run_nnunet_inference(ct_image, model_folder, device="cpu"):
             results/nnunet/Dataset001_NSCLCRadiomics/nnUNetTrainer_250epochs__nnUNetPlans__3d_fullres
         device: "cpu" or "cuda".
     Returns:
-        (mask, elapsed_sec) — binary (Z, Y, X) uint8 mask aligned to ct_image.
+        (mask, elapsed_sec): binary (Z, Y, X) uint8 mask aligned to ct_image.
         Returns a zero mask and logs a warning if the model is missing or fails.
     """
     model_folder = Path(model_folder)
@@ -48,7 +47,7 @@ def run_nnunet_inference(ct_image, model_folder, device="cpu"):
 
     if not model_folder.exists():
         logger.warning(
-            "nnU-Net model folder not found: %s — download/unzip the trained model "
+            "nnU-Net model folder not found: %s; download/unzip the trained model "
             "into results/nnunet/ first.", model_folder,
         )
         return np.zeros(ref_shape, dtype=np.uint8), 0.0
@@ -85,7 +84,7 @@ def run_nnunet_inference(ct_image, model_folder, device="cpu"):
             pred_mask = (sitk.GetArrayFromImage(pred_image) > 0).astype(np.uint8)
 
     except Exception as exc:
-        # Log the full traceback, not just the message — a silent zero mask here
+        # Log the full traceback, not just the message, because a silent zero mask here
         # is indistinguishable from a genuine empty prediction and was masking
         # real failures (missing torch, checkpoint mismatch, multiprocessing).
         logger.warning("nnU-Net inference failed: %s", exc, exc_info=True)

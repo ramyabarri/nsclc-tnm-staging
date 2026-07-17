@@ -1,17 +1,15 @@
-"""Vision Agent — CT segmentation and T-factor estimation.
+"""Vision agent.
 
-Responsibilities:
-- Load a (pre-processed) CT volume and a tumour mask (provided, or produced by
-  the locally-trained nnU-Net via agents.vision.inference)
-- Extract shape features (max 3D diameter, volume); full PyRadiomics vector is an
-  optional lazy add-on
-- Map tumour size -> IASLC T category and return structured T-factor evidence
+This agent handles the imaging side and produces the T factor. It takes a CT
+volume and a tumour mask (either one I pass in, or one the locally-trained nnU-Net
+produces), measures the tumour, and turns its greatest dimension into an IASLC T
+category.
 
-Notes / limitations:
-- The size -> T mapping is reliable from segmentation. Invasion-based upstaging
-  (visceral pleura / chest wall / mediastinum / main bronchus) cannot be read
-  from a binary tumour mask alone; those are accepted as OPTIONAL inputs and are
-  a documented area for future work (e.g. via TotalSegmentator anatomical context).
+One limitation worth stating: T can also be raised by invasion into nearby
+structures (pleura, chest wall, mediastinum, main bronchus), and you cannot tell
+that from a plain tumour mask. I allow those invasion flags as optional inputs but
+do not try to infer them from the mask; picking them up automatically (for example
+with TotalSegmentator for anatomical context) is left for future work.
 """
 
 from __future__ import annotations
@@ -25,7 +23,7 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
-# (z, y, x) voxel spacing in mm — matches the preprocessing pipeline.
+# (z, y, x) voxel spacing in mm, matching the preprocessing pipeline.
 DEFAULT_SPACING_ZYX = (3.0, 1.0, 1.0)
 
 # IASLC T size thresholds (greatest dimension, mm) -> category. Upper-bound, mm.
@@ -59,9 +57,9 @@ class TFactorEvidence:
 
 
 class VisionAgent:
-    """CT-based T-factor estimation agent.
+    """Estimates the T factor from a CT scan and its tumour mask.
 
-    Usage:
+    Example:
         agent = VisionAgent(config)
         evidence = agent.run(ct_path, mask_path=gtv_mask_path)
     """
@@ -71,29 +69,22 @@ class VisionAgent:
         self.spacing = tuple(self.config.get("spacing_zyx", DEFAULT_SPACING_ZYX))
         self.model_folder = Path(self.config.get("nnunet_model", DEFAULT_NNUNET_MODEL_FOLDER))
         self.min_tumour_voxels = int(self.config.get("min_tumour_voxels", 10))
-        # Clinical T is the greatest dimension of the PRIMARY tumour, measured on
-        # the axial plane. Measuring the max-3D-diameter over the whole GTV
-        # over-stages: (a) the cranio-caudal diagonal inflates the number, and
-        # (b) disconnected nodal/satellite deposits in the GTV get included.
-        # Defaults below fix both; set diameter_method="diameter3d" and
-        # use_largest_component=False to recover the naive whole-GTV behaviour.
+        # Clinically, T is the greatest dimension of the primary tumour measured on
+        # the axial (in-plane) view. If I instead take the max 3D diameter over the
+        # whole GTV the number comes out too big for two reasons: the top-to-bottom
+        # diagonal stretches it, and any separate nodal or satellite blobs in the
+        # GTV get counted too. The defaults below avoid both. Setting
+        # diameter_method="diameter3d" and use_largest_component=False gives back
+        # the old whole-GTV behaviour if I want to compare.
         self.diameter_method = self.config.get("diameter_method", "axial")  # "axial" | "diameter3d"
         self.use_largest_component = bool(self.config.get("use_largest_component", True))
 
-    # ------------------------------------------------------------------
-    # Lifecycle
-    # ------------------------------------------------------------------
-
     def load_models(self) -> None:
-        """No-op: the nnU-Net predictor is loaded lazily inside segment()."""
+        """Nothing to do here; nnU-Net is only loaded when segment() needs it."""
         return None
 
-    # ------------------------------------------------------------------
-    # Main entrypoint
-    # ------------------------------------------------------------------
-
     def run(self, ct_path: str, mask_path: str | None = None) -> TFactorEvidence:
-        """Full pipeline: load CT -> (segment | load mask) -> features -> T category."""
+        """Whole pipeline: load the CT, get a mask, measure it, decide T."""
         volume = self.preprocess(ct_path)
         if mask_path is not None:
             mask = self._load_array(mask_path)
@@ -116,20 +107,17 @@ class VisionAgent:
             },
         )
 
-    # ------------------------------------------------------------------
-    # Pipeline steps
-    # ------------------------------------------------------------------
-
     def preprocess(self, ct_path: str) -> np.ndarray:
-        """Load a (pre-processed) CT volume from .npy or NIfTI."""
+        """Load a CT volume from a .npy or NIfTI file."""
         return self._load_array(ct_path)
 
     def segment(self, volume: np.ndarray) -> np.ndarray:
-        """Run the locally-trained nnU-Net; return a binary tumour mask.
+        """Run the trained nnU-Net on the volume and return a binary tumour mask.
 
-        `volume` must be RAW HU (nnU-Net normalises internally). Wraps it in a
-        SimpleITK image using self.spacing and delegates to agents.vision.inference.
-        Returns a zero mask (with a warning) if no trained model is present.
+        The volume must be raw HU values (nnU-Net does its own normalisation). I
+        wrap it in a SimpleITK image with the right spacing and hand it to
+        agents.vision.inference. If no trained model is found it returns an empty
+        mask and logs a warning.
         """
         import SimpleITK as sitk
         from agents.vision.inference import run_nnunet_inference
@@ -143,13 +131,13 @@ class VisionAgent:
         return mask
 
     def extract_radiomics(self, volume: np.ndarray, mask: np.ndarray) -> dict[str, float]:
-        """Shape features from the mask. Full PyRadiomics vector is added if the
-        library is installed (lazy); otherwise the basic shape features suffice
-        for T classification.
+        """Measure the tumour: volume, and both axial and 3D diameters.
 
-        Size is measured on the PRIMARY tumour (largest connected component) using
-        the configured `diameter_method` — see __init__ for why this avoids
-        over-staging. Both the axial and 3D diameters are recorded for audit.
+        These basic shape numbers are all the T rule needs. If PyRadiomics happens
+        to be installed I add its full shape feature set on top. Everything is
+        measured on the primary tumour (the largest connected component) for the
+        reason explained in __init__, and I keep both diameters so the choice can
+        be checked later.
         """
         full_b = np.asarray(mask, dtype=bool)
         primary_b, n_components, largest_frac = self._primary_component(full_b)
@@ -203,8 +191,11 @@ class VisionAgent:
         mask: np.ndarray,
         invasion: dict[str, bool] | None = None,
     ) -> tuple[str, float]:
-        """Map greatest tumour dimension -> IASLC T category (+ optional invasion
-        upstaging). Returns (t_category, confidence)."""
+        """Turn the greatest tumour dimension into a T category.
+
+        Optionally raises T if invasion flags are supplied. Returns the category
+        and a confidence, or ('TX', 0.0) if there is no usable tumour to measure.
+        """
         primary_b, _, _ = self._primary_component(np.asarray(mask, dtype=bool))
         diam = (radiomics or {}).get("max_diameter_mm")
         if diam is None:
@@ -219,16 +210,13 @@ class VisionAgent:
         t = self._apply_invasion(t, invasion)
         return t, round(confidence, 3)
 
-    # ------------------------------------------------------------------
-    # Helpers
-    # ------------------------------------------------------------------
-
     def _primary_component(self, mask: np.ndarray) -> tuple[np.ndarray, int, float]:
-        """Return (largest-connected-component mask, n_components, largest_frac).
+        """Keep only the largest connected blob in the mask (the primary tumour).
 
-        The GTV can contain disconnected nodal/satellite deposits; clinical T is
-        the primary tumour, so we keep the single largest 3D-connected component.
-        Disabled via use_largest_component=False (returns the mask unchanged).
+        Returns that blob, how many blobs there were, and what fraction of the
+        voxels the largest one holds. The GTV can include separate nodal or
+        satellite bits, but clinical T is about the primary, so I drop the rest.
+        Turned off by use_largest_component=False, which returns the mask as-is.
         """
         mask_b = np.asarray(mask, dtype=bool)
         total = int(mask_b.sum())
@@ -253,7 +241,7 @@ class VisionAgent:
         return self._max_diameter_mm(mask)
 
     def _max_diameter_mm(self, mask: np.ndarray) -> float:
-        """Greatest 3D dimension (mm) — max distance between any two tumour voxels."""
+        """Greatest 3D dimension in mm: the max distance between any two tumour voxels."""
         coords = np.argwhere(np.asarray(mask, dtype=bool))
         if len(coords) < 2:
             return 0.0
@@ -271,7 +259,7 @@ class VisionAgent:
             return float(np.linalg.norm(extent))
 
     def _max_axial_diameter_mm(self, mask: np.ndarray) -> float:
-        """Greatest IN-PLANE (axial) dimension (mm) — the clinical convention.
+        """Greatest in-plane (axial) dimension in mm, the clinical convention.
 
         For each axial slice, the longest distance between two tumour voxels
         within that slice (using the y/x spacing); the tumour's greatest axial

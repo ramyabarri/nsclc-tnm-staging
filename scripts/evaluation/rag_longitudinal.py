@@ -1,22 +1,23 @@
-"""Longitudinal (budgeted) RAG ablation — RAG-select vs truncation under a fixed
-context budget.
+"""Second RAG experiment: retrieval vs. truncation under a fixed context budget.
 
-See reports/PREREGISTRATION_rag_longitudinal.md for the hypothesis, endpoints, and
-decision rule (fixed BEFORE running).
+I wrote the hypothesis and the primary endpoint down first, in
+reports/PREREGISTRATION_rag_longitudinal.md, before running any of this.
 
-Difference from rag_ablation.py: that script compares RAG against a baseline that
-reads the *entire* record. Here both arms get the SAME budget of k sentences and
-differ only in selection:
-  - RAG arm         : the k sentences most relevant to the N/M query (semantic).
-  - truncation arm  : the first k sentences of the concatenated record (naive).
-This tests whether retrieval beats naive truncation when the record (median 19
-notes) cannot fit the budget — the setting where RAG is actually meant to help.
+The first experiment (rag_ablation.py) compares RAG against reading the whole
+record. This one is different: both arms are given the same budget of k sentences,
+so the only thing that changes is how those k sentences are chosen.
+  - RAG arm: the k sentences most relevant to the N/M query.
+  - Truncation arm: just the first k sentences of the record.
+The point is to see whether retrieval beats naive truncation once the record (a
+median of 19 notes per patient) is too long to read in full, which is the
+situation RAG is supposed to help with.
 
-Metrics mirror rag_ablation.py (accuracy, quadratic-weighted κ, paired Wilcoxon on
-|N_pred − N_ref|). Primary endpoint: binary N0/N+ at k = 8.
+The metrics are the same as the first experiment (accuracy, quadratic-weighted κ,
+and a paired Wilcoxon test on the per-patient error). The primary endpoint is the
+binary N0/N+ result at k = 8.
 
-NOTE: credentialed MIMIC data. Outputs (subject_ids) go to results/ablation/
-(gitignored). Do not commit per-patient outputs.
+The MIMIC data is credentialed, so the per-patient outputs go to results/ablation/,
+which is gitignored, and must not be committed.
 
 Usage:
   python -m scripts.evaluation.rag_longitudinal                 # k=8 primary + {4,16}
@@ -64,8 +65,11 @@ def first_k_sentences(agent: ClinicalContextAgent, text: str, k: int) -> str:
 
 
 def run_budgeted(notes_by_subject: dict[int, str], k: int) -> pd.DataFrame:
-    """For each subject with a reference N, compare RAG-select vs first-k truncation
-    under a k-sentence budget. Columns match rag_ablation for compute_stats reuse."""
+    """Compare RAG against first-k truncation for every subject that has a reference N.
+
+    Both arms get the same k-sentence budget. I give the columns the same names as
+    rag_ablation.py so I can reuse compute_stats without changing it.
+    """
     agent = ClinicalContextAgent({"rag_k": k, "use_semantic": True})
     from agents.clinical_context import _N_ORDER as _N_ORD
 

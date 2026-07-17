@@ -1,20 +1,21 @@
-"""RAG ablation — does retrieval improve N-stage extraction from clinical notes?
+"""First RAG experiment: does retrieval improve N-staging from clinical notes?
 
-Compares the Clinical Context Agent WITH vs WITHOUT RAG retrieval on MIMIC-IV
-notes. Reference N-stage is a high-precision SILVER standard extracted from
-explicit staging statements (TNM strings / cN/pN mentions) in the note. Because
-the agent infers N from anatomical *findings* (lymph-node locations) while the
-reference comes from the explicit *stage statement*, the two signals are
-distinct; and since this is a PAIRED comparison against the same reference, the
-Wilcoxon test detects the RAG effect validly even if the reference is silver.
+This runs the Clinical Context agent with and without RAG on the same MIMIC-IV
+notes and compares the two. For the reference N-stage I use a silver standard:
+I pull it out of explicit staging statements in the note (TNM strings, cN/pN
+mentions), which is high precision. The agent works differently: it infers N from
+the anatomical findings (which nodes are involved) rather than from the stage
+statement, so the two are genuinely separate signals. And because each patient is
+compared against their own reference, the paired Wilcoxon test still measures the
+RAG effect fairly even though the reference is only silver.
 
 Metrics:
-  - Accuracy (exact N match) with vs without RAG
-  - Cohen's quadratic-weighted Kappa (prediction vs reference), each config
-  - Wilcoxon signed-rank on per-patient ordinal error |N_pred - N_ref|
+  - Accuracy (exact N match), with and without RAG
+  - Cohen's quadratic-weighted kappa against the reference, for each setting
+  - Wilcoxon signed-rank test on the per-patient error |N_pred - N_ref|
 
-NOTE: operates on credentialed MIMIC data. Outputs (subject_ids) are written to
-results/ablation/ which is gitignored. Do not commit per-patient outputs.
+The MIMIC data is credentialed, so outputs (which contain subject_ids) go to
+results/ablation/, which is gitignored, and must not be committed.
 
 Usage:
   python -m scripts.evaluation.rag_ablation --limit 300
@@ -44,7 +45,7 @@ OUT_DIR = Path("results/ablation")
 _N_ORD = {"N0": 0, "N1": 1, "N2": 2, "N3": 3}
 
 # High-precision reference extraction from explicit staging statements.
-# N adjacent to an M-stage (…N2M0) or a T-stage (T2N2…) — high precision.
+# N next to an M-stage (...N2M0) or a T-stage (T2N2...); high precision.
 _TNM = re.compile(
     r"\b(?:T[0-4][a-c]?\s*)?[cp]?N\s*([0-3])\s*M[0-1][a-c]?\b"   # N#M#, opt T/c/p
     r"|\bT[0-4][a-c]?\s*[cp]?N\s*([0-3])\b",                      # T#N#
@@ -112,7 +113,7 @@ def compute_stats(df):
     rag = df["pred_rag"].map(_N_ORD).to_numpy()
     nor = df["pred_norag"].map(_N_ORD).to_numpy()
 
-    # Binary node status (N0 vs N+) — a more robust primary endpoint than 4-class.
+    # Binary node status (N0 vs N+), a more robust primary endpoint than 4-class.
     ref_pos = (df["ref_n"] != "N0").to_numpy()
     rag_pos = (df["pred_rag"] != "N0").to_numpy()
     nor_pos = (df["pred_norag"] != "N0").to_numpy()
@@ -167,7 +168,7 @@ def main():
 
     df = run_ablation(notes, args.rag_k, args.retrieval)
     if df.empty:
-        print("No patients with an extractable reference N-stage — cannot run ablation.")
+        print("No patients with an extractable reference N-stage; cannot run ablation.")
         return
 
     df.to_csv(OUT_DIR / "rag_ablation_per_patient.csv", index=False)

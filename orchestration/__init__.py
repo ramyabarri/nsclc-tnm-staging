@@ -1,16 +1,17 @@
-"""Multi-agent orchestration for NSCLC TNM staging.
+"""Ties the three agents together into one staging pipeline.
 
-Wires the three agents into one pipeline:
+The shape of it:
 
         vision (T) ----\\
   START --             +--> guideline (stage) --> END
         clinical (N/M)-/
 
-Vision and Clinical Context are independent, so they fan out from START and join
-at the Guideline Logic node. Uses LangGraph when installed; otherwise a
-dependency-free sequential runner executes the same nodes. Node failures are
-caught and degrade gracefully (an empty evidence object is passed on, and the
-error is recorded) so the pipeline always returns a StagingResult.
+Vision and Clinical Context don't depend on each other, so they both run from the
+start and then meet at the Guideline node, which needs both of their outputs. I
+use LangGraph to run this when it is installed; if it isn't, a plain sequential
+runner does the same three steps in order. If either the Vision or Clinical step
+throws, I catch it, pass on an empty evidence object, and record the error, so the
+pipeline still returns a result instead of crashing.
 """
 
 from __future__ import annotations
@@ -40,9 +41,9 @@ class StagingState(TypedDict, total=False):
 
 
 class StagingOrchestrator:
-    """Runs the Vision / Clinical Context / Guideline Logic agents as one pipeline.
+    """Runs the Vision, Clinical Context and Guideline Logic agents as one pipeline.
 
-    Usage:
+    Example:
         orch = StagingOrchestrator(config)
         result = orch.run(patient_id, ct_path, notes, mask_path=gtv_mask)
     """
@@ -54,9 +55,7 @@ class StagingOrchestrator:
         self.guideline = GuidelineLogicAgent(self.config.get("guideline_logic", {}))
         self._graph = None
 
-    # ------------------------------------------------------------------
-    # Nodes (shared by the LangGraph and sequential paths)
-    # ------------------------------------------------------------------
+    # The three steps below are used by both the LangGraph and the sequential path.
 
     def _vision_node(self, state: StagingState) -> dict[str, Any]:
         try:
@@ -80,18 +79,14 @@ class StagingOrchestrator:
         result = self.guideline.run(t, nm, patient_id=state.get("patient_id"))
         return {"result": result}
 
-    # ------------------------------------------------------------------
-    # Graph construction / execution
-    # ------------------------------------------------------------------
-
     def build_graph(self):
-        """Compile the LangGraph pipeline, or return None if LangGraph is absent."""
+        """Build and compile the LangGraph graph, or return None if it isn't installed."""
         if self._graph is not None:
             return self._graph
         try:
             from langgraph.graph import StateGraph, START, END
         except ImportError:
-            logger.info("LangGraph not installed — using sequential fallback.")
+            logger.info("LangGraph not installed; using sequential fallback.")
             return None
 
         g = StateGraph(StagingState)
@@ -107,7 +102,7 @@ class StagingOrchestrator:
         return self._graph
 
     def _run_sequential(self, state: StagingState) -> StagingState:
-        """Fallback executor when LangGraph is unavailable."""
+        """Run the three steps in order; the fallback when LangGraph isn't installed."""
         state.setdefault("errors", [])
         for node in (self._vision_node, self._clinical_node, self._guideline_node):
             update = node(state)

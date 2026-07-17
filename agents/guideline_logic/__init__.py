@@ -1,13 +1,13 @@
-"""Guideline Logic Agent — IASLC TNM rule adjudication.
+"""Guideline Logic agent.
 
-Responsibilities:
-- Accept T, N, M evidence from Vision and Clinical Context agents
-- Apply IASLC deterministic stage-grouping rules (configs/iaslc_rules.yaml)
-- Resolve conflicts / missing values (conservative adjudication)
-- Return final TNM stage with a structured rationale trace
+This is the last stage of the pipeline. It takes the T evidence from the Vision
+agent and the N/M evidence from the Clinical Context agent, then works out the
+overall stage by looking the (T, N, M) combination up in the IASLC table.
 
-The stage grouping is DATA, loaded from configs/iaslc_rules.yaml — see that file
-for the edition and the clinical-verification caveat.
+I keep the actual staging table in configs/iaslc_rules.yaml rather than hard-coding
+it here, so the rules stay data (easy to check against the guideline, and I can
+swap editions without touching this file). When a value is missing I fall back to
+a conservative default instead of guessing.
 """
 
 from __future__ import annotations
@@ -66,13 +66,13 @@ class StagingResult:
 
 
 class GuidelineLogicAgent:
-    """Rule-based IASLC TNM adjudication agent.
+    """Turns T/N/M evidence into the final stage using the IASLC rules.
 
-    Final arbiter in the multi-agent pipeline: validates T/N/M evidence, applies
-    deterministic IASLC staging rules, resolves missing/low-confidence values, and
-    produces a StagingResult with a full rationale trace.
+    It checks the inputs, fills in conservative defaults for anything missing,
+    looks up the stage, and returns a StagingResult that also records how it got
+    there (the rationale) so the decision can be audited.
 
-    Usage:
+    Example:
         agent = GuidelineLogicAgent(config)
         result = agent.run(t_evidence, nm_evidence, patient_id="P001")
     """
@@ -95,12 +95,8 @@ class GuidelineLogicAgent:
         self.m_categories: set[str] = set()
         self._loaded = False
 
-    # ------------------------------------------------------------------
-    # Lifecycle
-    # ------------------------------------------------------------------
-
     def load_rules(self) -> None:
-        """Load the IASLC stage grouping table from configs/iaslc_rules.yaml."""
+        """Read the IASLC stage table from the YAML config into memory."""
         path = Path(self.config.get("rules_path", DEFAULT_RULES_PATH))
         if not path.exists():
             raise FileNotFoundError(f"IASLC rules file not found: {path}")
@@ -123,24 +119,20 @@ class GuidelineLogicAgent:
         self._loaded = True
         logger.info("Loaded %d stage rules (%s)", len(self.stage_rules), self.edition)
 
-    # ------------------------------------------------------------------
-    # Main entrypoint
-    # ------------------------------------------------------------------
-
     def run(
         self,
         t_evidence: TFactorEvidence,
         nm_evidence: NMFactorEvidence,
         patient_id: str | None = None,
     ) -> StagingResult:
-        """Adjudicate T/N/M evidence and return the final TNM stage."""
+        """Take the T and N/M evidence and return the final staged result."""
         if not self._loaded:
             self.load_rules()
 
         warnings = self.validate_inputs(t_evidence, nm_evidence)
         t, n, m = self.resolve_conflicts(t_evidence, nm_evidence)
 
-        # Record which resolutions substituted a default (a mild "conflict").
+        # Note down anywhere we had to fall back to a default value.
         conflicts: list[str] = []
         if getattr(t_evidence, "t_category", None) in (None, ""):
             conflicts.append("T defaulted to TX (no Vision evidence)")
@@ -155,7 +147,7 @@ class GuidelineLogicAgent:
         ]
         if stage == "indeterminate":
             warnings.append(
-                f"No stage grouping matched ({t}, {n}, {m}) — likely an unknown or "
+                f"No stage grouping matched ({t}, {n}, {m}); likely an unknown or "
                 "incomplete category (e.g. TX/NX). Stage left indeterminate."
             )
 
@@ -181,14 +173,10 @@ class GuidelineLogicAgent:
             nm_evidence=nm_evidence,
         )
 
-    # ------------------------------------------------------------------
-    # Pipeline steps
-    # ------------------------------------------------------------------
-
     def validate_inputs(
         self, t_evidence: TFactorEvidence, nm_evidence: NMFactorEvidence
     ) -> list[str]:
-        """Check for missing / implausible / low-confidence values; return warnings."""
+        """Collect warnings about missing, unknown or low-confidence inputs."""
         if not self._loaded:
             self.load_rules()
 
@@ -226,13 +214,13 @@ class GuidelineLogicAgent:
         t_evidence: TFactorEvidence,
         nm_evidence: NMFactorEvidence,
     ) -> tuple[str, str, str]:
-        """Extract (T, N, M), substituting conservative defaults when missing.
+        """Pull out (T, N, M), using safe defaults when a value is missing.
 
-        T comes from the Vision agent; N and M from the Clinical Context agent —
-        there is no cross-source contention on a single factor in the current
-        design, so resolution reduces to extraction + defaulting. Missing T/N ->
-        TX/NX; missing M -> M0 (the standard cM0 convention when there is no
-        evidence of distant metastasis).
+        Each factor comes from a different agent (T from Vision, N and M from
+        Clinical Context), so there is no real disagreement to settle here, and the
+        job is just to fill gaps sensibly. Missing T or N becomes TX or NX, and a
+        missing M becomes M0, which is the usual convention when nothing points to
+        distant spread.
         """
         t = getattr(t_evidence, "t_category", None) or "TX"
         n = getattr(nm_evidence, "n_category", None) or "NX"
@@ -240,7 +228,7 @@ class GuidelineLogicAgent:
         return t, n, m
 
     def apply_staging_rules(self, t: str, n: str, m: str) -> str:
-        """Look up the IASLC stage group for a (T, N, M) triple ('any' wildcards)."""
+        """Find the stage for a (T, N, M) triple; 'any' in a rule matches anything."""
         if not self._loaded:
             self.load_rules()
         for rule in self.stage_rules:
@@ -261,7 +249,7 @@ class GuidelineLogicAgent:
         conflicts: list[str],
         rules: list[str],
     ) -> StagingRationale:
-        """Construct the structured rationale trace for the staging decision."""
+        """Bundle the final T/N/M, the stage, and the trace into one object."""
         return StagingRationale(
             final_t=t,
             final_n=n,
@@ -271,13 +259,9 @@ class GuidelineLogicAgent:
             rules_applied=list(rules),
         )
 
-    # ------------------------------------------------------------------
-    # Utilities
-    # ------------------------------------------------------------------
-
     @staticmethod
     def tnm_string(t: str, n: str, m: str) -> str:
-        """Format canonical TNM string, e.g. 'T2aN1M0'."""
+        """Join the parts into one string, e.g. 'T2aN1M0'."""
         return f"{t}{n}{m}"
 
     def __repr__(self) -> str:  # noqa: D105
@@ -288,6 +272,6 @@ class GuidelineLogicAgent:
 
 
 def _conf(evidence: Any) -> float:
-    """Safely read a .confidence in [0, 1]; default 0.0 when absent/None."""
+    """Read the .confidence field, treating a missing/None value as 0.0."""
     value = getattr(evidence, "confidence", 0.0)
     return float(value) if value is not None else 0.0

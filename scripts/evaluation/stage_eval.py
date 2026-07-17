@@ -1,30 +1,30 @@
-"""End-to-end TNM staging evaluation on the NSCLC-Radiomics cohort.
+"""Whole-cohort staging evaluation on NSCLC-Radiomics.
 
-This is the cohort-level evaluation the pipeline was missing. It isolates and
-measures each stage so errors can be attributed to the right module
-(supervisor's per-component + end-to-end table):
+This measures the pipeline at the cohort level, and it keeps the three parts
+separate so I can tell which one is responsible for an error:
 
-  1. Vision T-classification  — GTV ground-truth mask -> VisionAgent size->T
-     mapping -> coarse T (1-4), compared to the clinical T stage. This decouples
-     the T-*classification* logic from segmentation quality (Dice is measured
-     separately by run_baselines.py), so the number here reflects the size->T
-     rule alone.
-  2. End-to-end stage         — predicted T (from imaging) + ground-truth N/M
-     -> GuidelineLogicAgent -> AJCC stage, compared to the clinical overall
-     stage. NSCLC-Radiomics has no free-text notes, so the Clinical Context
-     agent's N/M is replaced here by the recorded clinical N/M (an oracle N/M),
-     which is why this measures the Vision->Guideline path end-to-end. The
-     Clinical Context / RAG path is evaluated separately on MIMIC.
-  3. Guideline data-consistency — dataset ground-truth (T,N,M) -> guideline ->
-     stage vs the dataset's own overall stage. A cross-check of the encoded
-     table against the cohort's labelling (see caveats: coarse T labels and a
-     possible edition mismatch).
+  1. Vision T-classification. Take the GTV ground-truth mask, run it through the
+     Vision agent's size-to-T rule to get a coarse T (1-4), and compare that with
+     the clinical T. Using the ground-truth mask (not a predicted one) means this
+     number reflects only the size-to-T rule; segmentation quality is measured
+     separately in run_baselines.py.
+  2. End-to-end stage. Feed the predicted T plus the recorded clinical N and M
+     into the guideline engine and compare the stage it returns with the clinical
+     stage. NSCLC-Radiomics has no notes, so I stand in the recorded N/M here
+     instead of running the Clinical Context agent; that agent (and RAG) are
+     evaluated on MIMIC instead. So this really measures the imaging-to-guideline
+     path.
+  3. Guideline data-consistency. Feed the dataset's own T/N/M into the guideline
+     and compare against the dataset's own stage. This cross-checks the encoded
+     table against how the cohort was labelled (with the caveats about coarse T
+     and a possible edition mismatch).
 
-Metrics: accuracy (+ bootstrap 95% CI), confusion matrix, quadratic-weighted
-Cohen's kappa (ordinal), macro & weighted F1.
+Metrics: accuracy with a bootstrap 95% CI, the confusion matrix, quadratic-weighted
+Cohen's kappa, and macro and weighted F1.
 
-Ground-truth masks come from RTSTRUCT (GTV-1) — no nnU-Net needed, so this runs
-on CPU. Results are cached per patient so re-runs are cheap and resumable.
+The masks come from the RTSTRUCT GTV-1 contours, so no nnU-Net is needed and this
+runs on CPU. Each patient's result is cached, so re-running is cheap and can pick
+up where it left off.
 
 Usage:
     python -m scripts.evaluation.stage_eval --sample 80
@@ -367,29 +367,29 @@ def main() -> int:
 
 
 def _write_markdown(summary, cms, path):
-    lines = ["# End-to-End TNM Staging Evaluation — NSCLC-Radiomics", "",
+    lines = ["# End-to-End TNM Staging Evaluation (NSCLC-Radiomics)", "",
              f"_Patients evaluated:_ **{summary['n_records']}**", ""]
     lines += [
         "Vision T-classification uses the **GTV-1 ground-truth mask** as input, so it "
-        "measures the size→T rule in isolation (segmentation Dice is reported separately). "
+        "measures the size-to-T rule in isolation (segmentation Dice is reported separately). "
         "End-to-end stage combines the predicted T with the **recorded clinical N/M** "
         "(NSCLC-Radiomics has no free-text notes; the Clinical Context / RAG path is "
-        "evaluated on MIMIC). Coarse ground-truth T labels (T1–T4) cannot resolve "
+        "evaluated on MIMIC). Coarse ground-truth T labels (T1-T4) cannot resolve "
         "sub-categories, so T2 is fed to the guideline as T2a.", "",
         "| Component | n | Accuracy (95% CI) | Cohen κ | Macro F1 | Weighted F1 |",
         "| --- | --- | --- | --- | --- | --- |",
     ]
     for b in summary["blocks"]:
         if b.get("accuracy") is None:
-            lines.append(f"| {b['name']} | {b['n']} | — | — | — | — |"); continue
+            lines.append(f"| {b['name']} | {b['n']} | n/a | n/a | n/a | n/a |"); continue
         ci = b["accuracy_ci95"]
         lines.append(
-            f"| {b['name']} | {b['n']} | {b['accuracy']} ({ci[0]}–{ci[1]}) | "
+            f"| {b['name']} | {b['n']} | {b['accuracy']} ({ci[0]}-{ci[1]}) | "
             f"{b.get('cohen_kappa')} ({b.get('kappa_weighting')}) | "
             f"{b.get('macro_f1')} | {b.get('weighted_f1')} |")
     lines.append("")
     for key, cm in cms.items():
-        lines += [f"### Confusion matrix — {key}", "", "```",
+        lines += [f"### Confusion matrix: {key}", "", "```",
                   cm.to_string(), "```", ""]
     path.write_text("\n".join(lines) + "\n")
 

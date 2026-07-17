@@ -1,15 +1,14 @@
-"""Exhaustive validation of the Guideline Logic Agent's IASLC rule engine.
+"""Checks the guideline engine against every possible T/N/M combination.
 
-The staging table lives in ``configs/iaslc_rules.yaml`` and is loaded by the
-agent. This script validates that table by enumerating EVERY (T, N, M)
-combination over the valid category tokens and comparing the agent's output
-against an *independently written* IASLC 8th-edition oracle (``oracle_stage``
-below). Because the oracle is coded by hand from the published stage groups —
-not read from the YAML — full agreement is evidence that the encoded table
-faithfully implements the guideline, with no data or model involved.
+The staging table lives in configs/iaslc_rules.yaml and is loaded by the agent.
+To check it, I go through every (T, N, M) combination of the valid tokens and
+compare what the agent returns against a second oracle (oracle_stage below) that I
+coded by hand straight from the published IASLC 8th-edition stage groups. Since
+the oracle doesn't read the YAML, the two agreeing everywhere is good evidence
+that the table really does implement the guideline correctly, with no data or model
+is involved, it is purely the rules.
 
-This isolates and certifies the deterministic component of the pipeline
-(supervisor's "formal validation of the guideline engine").
+This is the "formal validation of the guideline engine" my supervisor asked for.
 
 Usage:
     python -m scripts.evaluation.validate_guideline
@@ -114,7 +113,7 @@ def validate() -> dict:
 def _write_report(res: dict, path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     lines = [
-        "# Guideline Logic Agent — Exhaustive Rule Validation",
+        "# Guideline Logic Agent: Exhaustive Rule Validation",
         "",
         f"_Edition:_ **{res['edition']}**  ",
         f"_Combinations tested:_ **{res['total']}** "
@@ -126,11 +125,11 @@ def _write_report(res: dict, path: Path) -> None:
     ]
     if res["failed"] == 0:
         lines.append(
-            "✅ **PASS** — the encoded stage table reproduces the independently "
+            "**PASS**. The encoded stage table reproduces the independently "
             "hand-coded IASLC 8th-edition oracle for every category combination."
         )
     else:
-        lines.append(f"❌ **{res['failed']} mismatch(es):**")
+        lines.append(f"**{res['failed']} mismatch(es):**")
         lines.append("")
         lines.append("| T | N | M | agent | oracle |")
         lines.append("| --- | --- | --- | --- | --- |")
@@ -160,7 +159,7 @@ def main() -> int:
         for mm in res["mismatches"]:
             print(f"    ({mm['t']},{mm['n']},{mm['m']}): agent={mm['agent']} oracle={mm['oracle']}")
     else:
-        print("  PASS — encoded table matches the independent oracle exactly.")
+        print("  PASS: encoded table matches the independent oracle exactly.")
     print(f"Report: {args.output}")
     return 0 if res["failed"] == 0 else 1
 

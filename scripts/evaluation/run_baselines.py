@@ -88,7 +88,7 @@ def run_model(model, ct_image, nnunet_model_folder):
 def write_markdown_summary(summary, path):
     columns = list(summary.columns)
     lines = [
-        "# Week 5 Vision Agent Baselines — Summary",
+        "# Week 5 Vision Agent Baselines: Summary",
         "",
         "_Raw-HU input reconstructed from DICOM; GTV-1 ground truth from RTSTRUCT._",
         "",
