@@ -130,4 +130,4 @@ Python, nnU-Net v2, MONAI, SimpleITK, pydicom, sentence-transformers (Bio_Clinic
 
 ## Author
 
-**Ramya Barri** · [LinkedIn](https://www.linkedin.com/in/ramya-barri-12345) · [GitHub](https://github.com/ramyabarri)
+**Ramya Barri** · [LinkedIn](https://www.linkedin.com/in/ramya-barri) · [GitHub](https://github.com/ramyabarri)
