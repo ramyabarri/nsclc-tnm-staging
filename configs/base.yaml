@@ -1,148 +1,51 @@
+# Default settings for the staging pipeline.
+# Each top level section is passed to the matching agent by StagingOrchestrator,
+# so the keys below are exactly the ones the agents read.
+
 project:
   name: nsclc-tnm-staging
-  version: "0.1.0"
+  version: "1.0.0"
   seed: 42
 
-# ------------------------------------------------------------------
-# Data paths (populated at runtime via env vars or Hydra overrides)
-# ------------------------------------------------------------------
 data:
-  raw_dir: ${oc.env:DATA_RAW_DIR,data/raw}
-  processed_dir: ${oc.env:DATA_PROCESSED_DIR,data/processed}
-  sample_dir: data/sample
-  tcia_radiomics_dir: ${data.raw_dir}/NSCLC-Radiomics
-  tcia_radiogenomics_dir: ${data.raw_dir}/NSCLC-Radiogenomics
-  mimic_dir: ${data.raw_dir}/mimic-iv-3.1
-  mimic_notes_dir: ${data.raw_dir}/mimic-iv-note-2.2
+  raw_dir: data/raw
+  processed_dir: data/processed
+  nsclc_radiomics_dir: data/raw/NSCLC-Radiomics
+  clinical_csv: data/raw/Lung1_clinical.csv
+  mimic_notes_dir: data/raw/mimic-iv-note-2.2/note
 
-# ------------------------------------------------------------------
-# Preprocessing
-# ------------------------------------------------------------------
 preprocessing:
   ct:
-    target_spacing: [1.0, 1.0, 3.0]   # mm — axial, coronal, sagittal; native cohort z-spacing
-                                       # is 3.0mm, so z is preserved (not interpolated) to
-                                       # avoid inventing slices
-    clip_hu: [-1000, 400]              # Hounsfield unit window
-    normalize: z_score                 # z_score | min_max
-    patch_size: [128, 128, 64]
-    lung_window: [-1200, -200]
+    target_spacing_zyx: [3.0, 1.0, 1.0]   # mm; native z spacing kept to avoid inventing slices
+    clip_hu: [-1000, 400]
+    normalize: z_score
 
-  text:
-    max_seq_len: 512
-    model_name: "emilyalsentzer/Bio_ClinicalBERT"
-    batch_size: 32
-    lowercase: true
-    remove_phi: true                   # de-identification flag
+# Vision Agent: nnU-Net v2 segmentation and size to T rule
+vision:
+  nnunet_model: results/nnunet/Dataset001_NSCLCRadiomics/nnUNetTrainer_250epochs__nnUNetPlans__3d_fullres
+  device: cpu                     # cpu | cuda
+  spacing_zyx: [3.0, 1.0, 1.0]
+  min_tumour_voxels: 10
+  diameter_method: axial          # axial | diameter3d
+  use_largest_component: true
 
-# ------------------------------------------------------------------
-# Train / validation / test split
-# ------------------------------------------------------------------
-split:
-  strategy: stratified                 # stratified | random | site
-  train: 0.70
-  val: 0.15
-  test: 0.15
-  stratify_by: tnm_stage              # column used for stratification
+# Clinical Context Agent: embedding retrieval and negation aware N/M extraction
+clinical_context:
+  embedding_model: emilyalsentzer/Bio_ClinicalBERT
+  use_semantic: true              # false uses keyword retrieval only
+  rag_k: 8                        # sentences retrieved per patient
+  min_confidence: 0.5
 
-# ------------------------------------------------------------------
-# Vision Agent — segmentation (nnU-Net)
-# ------------------------------------------------------------------
-vision_agent:
-  backbone: nnunet_v2
-  task_name: NSCLC_Tumour
-  fold: 0                              # 0–4 for cross-val, "all" for ensemble
-  checkpoint: best                     # best | latest | final
-  post_processing:
-    remove_small_components: true
-    min_volume_mm3: 50
-  radiomics:
-    feature_classes:
-      - firstorder
-      - shape
-      - glcm
-      - glrlm
-      - glszm
-    voxel_based: false
-
-# ------------------------------------------------------------------
-# Clinical Context Agent — NLP + RAG
-# ------------------------------------------------------------------
-clinical_context_agent:
-  embedding_model: "emilyalsentzer/Bio_ClinicalBERT"
-  vector_db:
-    provider: chromadb
-    collection_name: nsclc_clinical_notes
-    persist_dir: ${oc.env:CHROMA_DIR,chroma}
-    distance_metric: cosine
-    n_results: 5
-  extraction:
-    targets:
-      - lymph_node_status
-      - metastasis_sites
-      - tumour_size_report
-      - pleural_invasion
-      - vascular_invasion
-    confidence_threshold: 0.75
-
-# ------------------------------------------------------------------
-# Guideline Logic Agent — IASLC 9th edition
-# ------------------------------------------------------------------
-guideline_logic_agent:
-  edition: "IASLC_9th_2024"
-  rules_file: configs/iaslc_rules.yaml  # populated in later sprint
+# Guideline Logic Agent: deterministic IASLC 8th edition lookup
+guideline_logic:
+  rules_path: configs/iaslc_rules.yaml
+  min_confidence: 0.5
   adjudication:
-    conflict_resolution: conservative   # conservative | majority | weighted
-    require_all_agents: true
+    conflict_resolution: conservative
 
-# ------------------------------------------------------------------
-# Model hyperparameters (fine-tuning / downstream classifier)
-# ------------------------------------------------------------------
-model:
-  classifier:
-    type: mlp                           # mlp | xgboost | transformer
-    hidden_dims: [256, 128, 64]
-    dropout: 0.3
-    activation: relu
-  training:
-    epochs: 50
-    batch_size: 16
-    optimizer: adamw
-    lr: 1.0e-4
-    lr_scheduler: cosine_annealing
-    weight_decay: 1.0e-5
-    early_stopping_patience: 10
-    gradient_clip_norm: 1.0
-  loss:
-    type: cross_entropy
-    label_smoothing: 0.1
-
-# ------------------------------------------------------------------
-# Evaluation metrics
-# ------------------------------------------------------------------
 evaluation:
-  primary_metric: exact_stage_accuracy
   metrics:
-    - exact_stage_accuracy           # full TNM string match
     - t_accuracy
     - n_accuracy
-    - m_accuracy
+    - stage_accuracy
     - cohens_kappa
-    - auc_binary_stage               # early (I-II) vs late (III-IV)
-    - expected_calibration_error
-    - off_by_one_accuracy
-  bootstrap_n: 1000
-  confidence_level: 0.95
-
-# ------------------------------------------------------------------
-# Logging & tracking
-# ------------------------------------------------------------------
-logging:
-  level: INFO
-  wandb:
-    enabled: false
-    project: nsclc-staging
-    entity: ${oc.env:WANDB_ENTITY,""}
-  mlflow:
-    enabled: false
-    tracking_uri: ${oc.env:MLFLOW_TRACKING_URI,mlruns}

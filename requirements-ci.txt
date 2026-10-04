@@ -1,0 +1,10 @@
+# Lightweight dependencies for running the test suite in CI (no GPU or model weights)
+numpy
+scipy
+pandas
+scikit-learn
+pyyaml
+pydicom
+SimpleITK
+rt-utils
+pytest
